@@ -1,116 +1,123 @@
-#include <iostream>
-#include <string>
-#include <thread>
-#include <mutex>
-#include <cstdlib>
-#include <cstring>
-#include <unistd.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
- #include <stdarg.h>
+#include    <iostream>
+#include    "Transmit.h"
 
-#define BUF_SIZE 1024
-#define SERVER_PORT 5208 //侦听端口
-#define IP "127.0.0.1"
+using namespace std;
 
-void send_msg(int sock);
-void recv_msg(int sock);
-int output(const char *arg,...);
-int error_output(const char *arg,...);
-void error_handling(const std::string &message);
+class Client_Data_Stream : public Transmit_Data{
+    private: 
+        int ClientSocket; 
+        sockaddr_in ClientAddress;
+        char ReceiveBuffer[BUFFER] = {0};
+        char SendBuffer[BUFFER] = "Response from client"; 
+        mutex MutexObject;
+        int Stage;
+    public:
 
-std::string name = "DEFAULT";
-std::string msg;
+        // Config Client Socket
+        void Config_Socket(short InternetProtocol, uint16_t Port, in_addr_t Adress){
+            ClientAddress.sin_family = InternetProtocol; // AF_INET
+            ClientAddress.sin_port = htons(Port);
+            ClientAddress.sin_addr.s_addr = Adress; //INADDR_ANY
+            
+        }
+        
+        // Create Socket
+        Client_Data_Stream(int Domain, int TypeSocket, int InternetProtocol){
+            ClientSocket = socket(Domain, TypeSocket, InternetProtocol);// InternetProtocol = 0, Domain = AF_INET, TypeSocket = SOCK_STREAM,
+        }
+        //using Sever_Data_Stream::Sever_Data_Stream
+        
+        ~Client_Data_Stream(){
+            close(ClientSocket);
+            
+        }
+        
+        void Client_Conneted(){
+            if((connect(ClientSocket, (struct sockaddr*)&ClientAddress, sizeof(ClientAddress))) < 0){
+                cerr << "Client Connected Error: "<< strerror(errno) << endl;
+                exit(EXIT_FAILURE);
+            }
+        }
+        
+        // Send Text
+        void Send_Data(int Mode) override{
+            if((send(ClientSocket, SendBuffer, strlen(SendBuffer), Mode)) < 0){
+                cerr << "Send Message Error: "<< strerror(errno) << endl;
+                return;
+            }
+            else
+                cout << "Client: " << SendBuffer << endl;
+                strcpy(SendBuffer, "");
+        }
+        
 
-int main(int argc,const char **argv,const char **envp){
-    int sock;
-    // sockaddr_in serv_addr{};
-    struct sockaddr_in serv_addr;
+        void Edit_Send(int Mode) override{
+            while(true){
+                unique_lock<mutex> lock(MutexObject);
+                cin.getline(SendBuffer, BUFFER);
+                Input_Clear::Clear_Input_CommandLine();
+                if(cin.fail()){
+                    cerr << "Input Error: "<< strerror(errno) << endl;
+                    cin.clear(); 
+                    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+                    return;
+                }
+                else{
+                    if(strcmp(SendBuffer, "~") == 0){
+                        close(ClientSocket);
+                        exit(0);
+                    } 
+                    Send_Data(Mode);
+                }
+                 
+                
+            }
+        }
+        // Receive Text
+        void Receive_Data(int Mode) override{
+            while(true){
+                Stage = recv(ClientSocket, ReceiveBuffer, sizeof(ReceiveBuffer), Mode);
+                if(Stage < 0){
+                    cerr << "Receive Message Error: "<< strerror(errno) << endl;
+                    return;
+                }
+                else if(Stage == 0){
+                    cout << "Sever Disconnect " << endl;
+                    close(ClientSocket);
+                    exit(0);
+                }
 
-    if (argc != 2){
-        error_output("Usage : %s <Name> \n",argv[0]);
-        exit(1);
-    }
+                else{
+                    cout << "Sever: " << ReceiveBuffer << endl;
+                    memset(ReceiveBuffer, 0, sizeof(ReceiveBuffer));
 
-    // 客户端名称
-    name = "["+std::string(argv[1])+"]";
+                }
+                    
 
-    // sock=socket(PF_INET, SOCK_STREAM, 0);
-    // 创建Socket,使用TCP协议
-    sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (sock == -1){
-        error_handling("socket() failed!");
-    }
+            }
+            
+        }
+};  
 
-    // 将套接字和指定的 IP、端口绑定
-    memset(&serv_addr, 0, sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = inet_addr(IP);
-    serv_addr.sin_port = htons(SERVER_PORT);
+
+
+// Global Variable
+std::mutex ExitFlagMutex;
+
+int main() 
+{
+    Client_Data_Stream* Client = new Client_Data_Stream(AF_INET, SOCK_STREAM, 0);
+    Client->Config_Socket(AF_INET, PORT, INADDR_ANY);
+    Client->Client_Conneted();
+        // Create Thread for Send and Receive
+    thread SendThread(&Client_Data_Stream::Edit_Send, Client, 0);
+    thread ReceiveThread(&Client_Data_Stream::Receive_Data, Client, 0);
     
-    //连接服务器
-    if (connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) == -1){
-        error_handling("connect() failed!");
-    }
-    // 向服务器发送自己的名字
-    std::string my_name = "#new client:" + std::string(argv[1]);
-    send(sock, my_name.c_str(), my_name.length() + 1, 0);
-    
-    // 生成发送、接受消息的线程
-    std::thread snd(send_msg, sock);
-    std::thread rcv(recv_msg, sock);
-    
-    snd.join();
-    rcv.join();
-    
-    close(sock);
+    // Waiting Thread End
+    SendThread.join();
+    ReceiveThread.join();
+    delete Client;
+
 
     return 0;
-}
-
-void send_msg(int sock){
-    while(1){
-        getline(std::cin, msg);
-        if (msg == "Quit"|| msg == "quit"){
-            close(sock);
-            exit(0);
-        }
-        // 生成消息格式（[name] massage）
-        std::string name_msg = name + " " + msg;
-        send(sock, name_msg.c_str(), name_msg.length() + 1, 0);
-    }
-}
-
-void recv_msg(int sock){
-    char name_msg[BUF_SIZE + name.length() + 1];
-    while (1){
-        int str_len = recv(sock, name_msg, BUF_SIZE+name.length() + 1, 0);
-        if (str_len == -1){
-            exit(-1);
-        }
-        std::cout<<std::string(name_msg)<<std::endl;
-    }
-}
-
-int output(const char *arg, ...){
-    int res;
-    va_list ap;
-    va_start(ap, arg);
-    res = vfprintf(stdout, arg, ap);
-    va_end(ap);
-    return res;
-}
-
-int error_output(const char *arg, ...){
-    int res;
-    va_list ap;
-    va_start(ap, arg);
-    res = vfprintf(stderr, arg, ap);
-    va_end(ap);
-    return res;
-}
-
-void error_handling(const std::string &message){
-    std::cerr<<message<<std::endl;
-    exit(1);
 }
